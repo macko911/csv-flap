@@ -1,0 +1,258 @@
+<html>
+  <head>
+    <meta charset="windows-1250">
+    <meta http-equiv="content-type" content="text/html;charset=utf-8">
+
+    <title>CSV converter example</title>
+
+    <style>
+      input,
+      label,
+      button,
+      table {
+          margin: .5rem 0;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        padding: .5rem;
+      }
+
+      tr:first-child {
+        font-weight: bold;
+        text-transform: capitalize;
+      }
+
+      tr td {
+        border: 1px solid silver;
+        padding: 10px;
+      }
+
+    </style>
+  </head>
+
+  <body>
+    <div>
+      <label for="csv-file">Nahraj soubor s priponou csv nebo slk</label>
+    </div>
+    <input type="file" id="csv-file" name="csv-file" accept="application/csv"> 
+    <button id="convert-btn">Zkonvertovat</button>
+
+    <div id="preview-table-wrap" style="display: none;">
+      <h3>Nahled</h3>
+      <table id="preview-table"></table>
+    </div>
+
+    <a id="download-btn" style="display: none;">
+      <button>Stahnout</button>
+    </a>
+  </body>
+
+  <script type="text/javascript" src="https://unpkg.com/papaparse@5.0.2/papaparse.min.js"></script>
+  <script lang="text/javascript" src="https://unpkg.com/xlsx@0.16.9/dist/xlsx.min.js"></script>
+
+
+  <script>
+    // constants
+    const COLUMNS = [
+      'date of posting',
+      'amount',
+      'currency',
+      'deposit',
+      'counter-account number',
+      'name of counter-account',
+      'constant symbol',
+      'variable symbol',
+      'specific symbol',
+      'marking the operation',
+      'Transaction ID',
+      'note'
+    ]
+
+    // elements
+    const fileInput = document.getElementById('csv-file');
+    const convertBtn = document.getElementById('convert-btn');
+    const downloadBtn = document.getElementById('download-btn');
+    const previewTable = document.getElementById('preview-table');
+    const previewTableWrap = document.getElementById('preview-table-wrap');
+
+    // user interaction events
+    fileInput.addEventListener('change', selectFile, false);
+    convertBtn.addEventListener('click', startConversion);
+
+    // file picker
+    let file
+    function selectFile (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      const targetFile = e.target.files[0]
+      file = targetFile;
+    }
+
+    // click on Convert button
+    function startConversion () {
+      if (!file) {
+        alert('Prosim vyberte nejprve CSV nebo SLK soubor.')
+        return
+      }
+      console.log({file});
+      if (file.name.endsWith('.csv')) {
+        convertCsvFile(file)
+        return
+      }
+      if (file.name.endsWith('.slk')) {
+        convertSlkFile(file)
+        return
+      }
+      alert('Nerozpoznali jsme format souboru.')
+    }
+
+    function convertSlkFile (slkFile) {
+      read = new FileReader()
+
+      read.onload = function (event) {
+        const textContent = event.target.result
+        console.log({
+          textContent
+        })
+        const sheet = XLSX.read(textContent, {
+          type: 'string'
+        })
+
+        const csv = XLSX.utils.sheet_to_csv(sheet.Sheets.Sheet1)
+        const json = XLSX.utils.sheet_to_json(sheet.Sheets.Sheet1)
+
+        console.log({
+          sheet,
+          csv,
+          json,
+        })
+      }
+
+      read.readAsText(slkFile)
+    }
+
+    function convertCsvFile (csvFile) {
+      // read file content and turn into JSON
+      Papa.parse(csvFile, {
+        delimiter: ';',
+        complete: function (results) {
+          try {
+            doConversions(results.data)
+          } catch (err) {
+            console.log(err)
+            alert("Nastala chyba pri konverzi souboru.")
+          }
+        }
+      });
+    }
+
+    function doConversions (initData) {
+      // remove first two lines
+      const sliced = initData.slice(2);
+      // fix last element in header
+      let header = sliced[0];
+      header[13] = 'note';
+      // remove last row and also last element from each row as it is empty
+      const data = sliced.slice(1, -1)
+        .map(function (row) {
+          return row.slice(0, -1)
+        });
+      const joined = [header].concat(data);
+
+      // convert to csv and then back to JSON now with proper key/value pairs
+      const parsed = Papa.parse(Papa.unparse(joined), {header: true});
+
+      // edit csv fields
+      let result = parsed.data
+        // convert encoded strings from Windows 1252 to UTF-8
+        .map(function (row) {
+          return Object.keys(row).reduce(function (newRow, key) {
+            newRow[key] = encodeWindows1252toUTF8(row[key])
+            return newRow
+          }, {})
+        })
+        .map(function (row) {
+          const newRow = Object.assign({}, row, {
+            deposit: row.deposit.replace(',', '.'),
+            amount: row.amount.replace(',', '.'),
+            'counter-account number': row['counter-account number'] + '/' + row['counter-account bank number'],
+          })
+          delete newRow['counter-account bank number'];
+          delete newRow['account no.'];
+          return newRow;
+        })
+
+      console.log({result})
+
+      const table = createTable(result)
+
+      // turn into a csv string
+      const finalCsv = Papa.unparse(result, {
+        header: true,
+        columns: COLUMNS
+      })
+
+      createDownloadButton(finalCsv);
+    }
+
+    function generateFileName () {
+      const date = (new Date()).toISOString().slice(0, 10);
+      return `xero-${date}.csv`;
+    }
+
+    function createDownloadButton (csv) {
+      const data = "data:text/csv;charset=utf-8," + csv;
+      downloadBtn.setAttribute('href', data);
+      downloadBtn.setAttribute('download', generateFileName());
+      downloadBtn.style.display = 'block';
+    }
+
+    function createTable (data) {
+      try {
+        const header = document.createElement('tr')
+        // header
+        for (let column of COLUMNS) {
+          const td = document.createElement('td')
+          td.textContent = column
+          header.appendChild(td)
+        }
+        previewTable.appendChild(header)
+
+        // actual data
+        for (let row of data) {
+          const tr = document.createElement('tr')
+          for (let key of COLUMNS) {
+            const cell = row[key]
+            const td = document.createElement('td')
+            td.textContent = cell
+            tr.appendChild(td)
+          }
+          previewTable.appendChild(tr)
+        }
+
+        previewTableWrap.style.display = 'block';
+      } catch (err) {
+        console.log(err)
+        alert('Nastala chyba pri vytvareni tabulky.')
+      }
+    }
+    function encodeWindows1252toUTF8(str) {
+      if (!str || typeof str !== 'string') {
+        return str
+      }
+      console.log({str})
+      const text = str
+      // const encodedData = windows1250.encode(str);
+      // const text = windows1250.decode(str)
+      // const uint8array = new TextEncoder('windows-1250').encode(str);
+      // const text = new TextDecoder('windows-1250').decode(uint8array);
+      console.log({text});
+      return text;
+    }
+  </script>
+  <script src="https://unpkg.com/windows-1250@1.0.0/windows-1250.js"></script>
+  <!-- <script src="https://www.unpkg.com/browse/text-encoding@0.7.0/lib/encoding-indexes.js"></script>
+  <script src="https://www.unpkg.com/browse/text-encoding@0.7.0/lib/encoding.js"></script> -->
+</html>
