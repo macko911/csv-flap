@@ -96,7 +96,7 @@
         alert('Prosim vyberte nejprve CSV nebo SLK soubor.')
         return
       }
-      console.log({file});
+      
       if (file.name.endsWith('.csv')) {
         convertCsvFile(file)
         return
@@ -112,25 +112,87 @@
       read = new FileReader()
 
       read.onload = function (event) {
-        const textContent = event.target.result
+        const result = event.target.result
         console.log({
-          textContent
+          result
         })
-        const sheet = XLSX.read(textContent, {
+        const PARSE_ERROR = 'PARSE_ERROR';
+
+        const parsedResult = result.split('\n')
+          // filter only lines that interest us
+          .filter((line) => ['F;', 'C;'].some((char) => line.startsWith(char)))
+          // alter each line to 
+          .map((line) => {
+            if (line.startsWith('C')) {
+              const replaced = line.replace('C;N;K', 'K').trim();
+              if (replaced.length === 3) {
+                return PARSE_ERROR
+              }
+              return replaced
+            }
+            if (line.startsWith('F')) {
+              const [X] = line.match(/X[0-9]+/) || []
+              const [Y] = line.match(/Y[0-9]+/) || []
+              if (!X | !Y) {
+                return PARSE_ERROR;
+              }
+              return `C;${X};${Y};`
+            }
+            return line
+          })
+          // join every second line into the previous line, making array of tuples
+          .reduce((arr, line, index, orig) => {
+            if (index % 2 === 1) {
+              const prevLine = orig[index - 1]
+              return [...arr, [prevLine, line]]
+            }
+            return arr;
+          }, [])
+          // remove errored tuples
+          .filter((tuple) => tuple.every((elem) => elem !== PARSE_ERROR))
+          // join tuples together
+          .map((tuple) => tuple.join(''))
+          // join into single string
+          .join('\n')
+
+        const resultString = `ID;PCALCOOO32\n${parsedResult}\nE`
+
+        console.log({parsedResult, resultString})
+        const workbook = XLSX.read(resultString, {
           type: 'string'
         })
 
-        const csv = XLSX.utils.sheet_to_csv(sheet.Sheets.Sheet1)
-        const json = XLSX.utils.sheet_to_json(sheet.Sheets.Sheet1)
-
+        const csv = XLSX.utils.sheet_to_csv(workbook.Sheets.Sheet1)
+        // const json = XLSX.utils.sheet_to_json(workbook.Sheets.Sheet1)
         console.log({
-          sheet,
+          workbook,
           csv,
-          json,
+        })
+
+        Papa.parse(csv, {
+          complete: function (csvResults) {
+            console.log({csvResults})
+            const records = csvResults.data.slice(4).filter((res) => res.length > 1)
+            console.log({records})
+            // convert to csv and then back to JSON now with proper key/value pairs
+            const parsed = Papa.parse(Papa.unparse(records), {header: true});
+            console.log({parsed})
+            parsed.data.forEach((row) => {
+              row['posting date'] = convertDaysFrom1900(parseInt(row['posting date'])).toLocaleDateString();
+            })
+            console.log({parsed})
+          }
         })
       }
 
       read.readAsText(slkFile)
+    }
+
+    // add number of days to 01/01/1900 and convert result to Date object
+    function convertDaysFrom1900 (days) {
+      const ms1900 = new Date('1900').getTime()
+      const msAddDays = days * 24 * 60 * 60 * 1000
+      return new Date(ms1900 + msAddDays)
     }
 
     function convertCsvFile (csvFile) {
@@ -139,7 +201,7 @@
         delimiter: ';',
         complete: function (results) {
           try {
-            doConversions(results.data)
+            doCsvConversions(results.data)
           } catch (err) {
             console.log(err)
             alert("Nastala chyba pri konverzi souboru.")
@@ -148,7 +210,7 @@
       });
     }
 
-    function doConversions (initData) {
+    function doCsvConversions (initData) {
       // remove first two lines
       const sliced = initData.slice(2);
       // fix last element in header
